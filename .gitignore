@@ -30,3 +30,13 @@
 *.exe
 *.out
 *.app
+
+# Visual Studio
+.vs
+
+# Data
+data
+
+# Build files
+bin
+obj

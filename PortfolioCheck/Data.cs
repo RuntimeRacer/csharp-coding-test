@@ -71,6 +71,9 @@ namespace PortfolioCheck
 
     public struct InvestmentValueComposition
     {
+        // Setup Logging for this class
+        private static NLog.Logger logger = NLog.LogManager.GetCurrentClassLogger();
+
         private Dictionary<string, double> _sharesIsinToAmount;
         private Dictionary<string, double> _fondsIdToOwnedPercentage;
         private Dictionary<string, double> _realEstateCityToAmount;
@@ -90,6 +93,80 @@ namespace PortfolioCheck
             _sharesIsinToAmount = sharesIsinToAmount;
             _fondsIdToOwnedPercentage = fondsIdToOwnedPercentage;
             _realEstateCityToAmount = realEstateCityToAmount;
+        }
+
+        public double GetSharesValue(DateTime date, Dictionary<string, Share>  quoteInformation)
+        {
+            double combinedValue = 0;
+            foreach(KeyValuePair<string, double> ownedShares in _sharesIsinToAmount)
+            {
+                if(!quoteInformation.ContainsKey(ownedShares.Key))
+                {
+                    logger.Warn("No quote reference availiable for Share '{0}'. Will be ignored.", ownedShares.Key);
+                    continue;
+                }
+
+                Share shareReference = quoteInformation[ownedShares.Key];
+                double valueAtDate = shareReference.GetPriceAt(date);
+                if(valueAtDate < 0)
+                {
+                    logger.Warn("No valid or previous quote information availiable for Share '{0}' at date {1}. Will be ignored.", ownedShares.Key, date);
+                    continue;
+                }
+                // Return value for owned percentage of total shares amount 
+                combinedValue += valueAtDate * ownedShares.Value;
+            }
+            return combinedValue;
+        }
+
+        public double GetFondsValue(
+            DateTime date, 
+            Dictionary<string, Investor> investorInformation,
+            Dictionary<string, Share> quoteInformation
+            )
+        {
+            double combinedValue = 0;
+            foreach (KeyValuePair<string, double> ownedFondsPercentages in _fondsIdToOwnedPercentage)
+            {
+                if (!investorInformation.ContainsKey(ownedFondsPercentages.Key))
+                {
+                    logger.Warn("No reference availiable for Fonds ID '{0}'. Will be ignored.", ownedFondsPercentages.Key);
+                    continue;
+                }
+                if (ownedFondsPercentages.Value <= 0)
+                {
+                    logger.Warn("No shared owned of Fonds ID '{0}'. Will be ignored.", ownedFondsPercentages.Key);
+                    continue;
+                }
+
+                Investor fondsReference = investorInformation[ownedFondsPercentages.Key];
+                InvestmentValueComposition fondsInvestments = fondsReference.GetAllInvestmentCompositionsAt(date);
+
+                double fondsTotalShareValue = fondsInvestments.GetSharesValue(date, quoteInformation);
+                double fondsTotalSubFondsValue = fondsInvestments.GetFondsValue(date, investorInformation, quoteInformation);
+                double fondsTotalEstateValue = fondsInvestments.GetEstateValue();
+
+                double valueAtDate = fondsTotalShareValue + fondsTotalSubFondsValue + fondsTotalEstateValue;
+                if (valueAtDate < 0)
+                {
+                    logger.Warn("Fonds ID '{0}' has no value at date {1}. Will be ignored.", ownedFondsPercentages.Key, date);
+                    continue;
+                }
+
+                // Return value for owned percentage of total fonds sum 
+                combinedValue += valueAtDate*ownedFondsPercentages.Value;
+            }
+            return combinedValue;
+        }
+
+        public double GetEstateValue()
+        {
+            double combinedValue = 0;
+            foreach (KeyValuePair<string, double> ownedRealEstateValue in _realEstateCityToAmount)
+            {
+                combinedValue += ownedRealEstateValue.Value;
+            }
+            return combinedValue;
         }
 
         public void Combine(InvestmentValueComposition combineSource)
@@ -272,7 +349,7 @@ namespace PortfolioCheck
             }
         }
 
-        public InvestmentValueComposition GetInvestmentValueAt(string investmentId, DateTime datetime)
+        public InvestmentValueComposition GetInvestmentCompositionAt(string investmentId, DateTime datetime)
         {
             if (!_investments.ContainsKey(investmentId))
             {
@@ -281,7 +358,7 @@ namespace PortfolioCheck
             return _investments[investmentId].GetValueCompositionAt(datetime);
         }
 
-        public InvestmentValueComposition GetAllInvestmentsValueAt(DateTime datetime)
+        public InvestmentValueComposition GetAllInvestmentCompositionsAt(DateTime datetime)
         {
             InvestmentValueComposition investmentValueComposition = new InvestmentValueComposition();
             foreach(Investment i in _investments.Values)

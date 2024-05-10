@@ -11,6 +11,7 @@ using CsvHelper.Configuration;
 using PortfolioCheck.model;
 using System.Globalization;
 using NLog.Config;
+using System.Text;
 
 namespace PortfolioCheck
 {
@@ -35,12 +36,21 @@ namespace PortfolioCheck
             public string DataFolder { get; set; }
             [Option('v', "verbose", Required = false, HelpText = "Set output to verbose messages.")]
             public bool Verbose { get; set; }
+            [Option('c', "culture-info", Required = false, Default = "de-DE", HelpText = "Set culture Info for displaying values and currencies. Default is 'de-DE'.")]
+            public string CultureInfo { get; set; }
         }
 
         static void RunOptions(Options opts)
         {
             // Just map 1:1 here as long as there's no special init required
             _options = opts;
+            // Print option values
+            logger.Info("Using Data folder: {0}", _options.DataFolder);
+            logger.Info("Using Culture Info: {0}", _options.CultureInfo);
+            if (_options.Verbose)
+            {
+                logger.Info("Verbose output mode enabled.");
+            }            
         }
         static void HandleParseError(IEnumerable<Error> errs)
         {
@@ -63,6 +73,9 @@ namespace PortfolioCheck
 
         static void Main(string[] args)
         {
+            // Set console encoding to UTF-8
+            Console.OutputEncoding = Encoding.UTF8;
+
             // Parse arguments
             Parser.Default.ParseArguments<Options>(args)
             .WithParsed(RunOptions)
@@ -101,7 +114,30 @@ namespace PortfolioCheck
                     DateTime date = DateTime.Parse(input[0]);
                     string investorId = input[1];
 
-                    // TODO: Actual lookup algorithm
+                    // Find Investor in the data if it exists
+                    if(!investors.ContainsKey(investorId))
+                    {
+                        throw new KeyNotFoundException("The provided Investor ID does not exist in the data.");
+                    }
+                    Investor investor = investors[investorId];
+
+                    // Get values for all Investment types
+                    InvestmentValueComposition investmentAtDate = investor.GetAllInvestmentCompositionsAt(date);
+                    double totalShareValue = investmentAtDate.GetSharesValue(date, shares);
+                    double totalFondsValue = investmentAtDate.GetFondsValue(date, investors, shares);
+                    double totalEstateValue = investmentAtDate.GetEstateValue();
+                    double combinedValue = totalShareValue + totalFondsValue + totalEstateValue;
+
+                    // Culture Info for output
+                    CultureInfo ci = new CultureInfo(_options.CultureInfo);
+
+                    Console.WriteLine(String.Format(ci, "Total Value for Investor '{0}' at date '{1}': {2:C}", investorId, date, Math.Round(combinedValue, 2)));
+                    if (_options.Verbose)
+                    {
+                        Console.WriteLine(String.Format("From Shares: {0:C} ({1:P2})", totalShareValue, totalShareValue / combinedValue));
+                        Console.WriteLine(String.Format("From Fonds: {0:C} ({1:P2})", totalFondsValue, totalFondsValue / combinedValue));
+                        Console.WriteLine(String.Format("From Real Estate: {0:C} ({1:P2})", totalEstateValue, totalEstateValue / combinedValue));
+                    }
                 }
                 catch (Exception e)
                 {
@@ -275,7 +311,7 @@ namespace PortfolioCheck
                     case "Estate":
                         transaction = new Transaction(investment, Transaction.ETransactionType.Estate, transactionDate, t.Value);
                         break;
-                    case "Share":
+                    case "Shares":
                         transaction = new Transaction(investment, Transaction.ETransactionType.Share, transactionDate, t.Value);
                         break;
                     default:

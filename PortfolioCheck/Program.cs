@@ -10,6 +10,7 @@ using CsvHelper;
 using CsvHelper.Configuration;
 using PortfolioCheck.model;
 using System.Globalization;
+using NLog.Config;
 
 namespace PortfolioCheck
 {
@@ -50,10 +51,15 @@ namespace PortfolioCheck
             }
         }
 
-        // Actual class Params start here
-        private static List<Investment> rawInvestments;
-        private static List<Quote> rawQuotes;
-        private static List<Transaction> rawTransactions;
+        // Lists for holding Raw Data on startup
+        private static List<model.Investment> rawInvestments;
+        private static List<model.Quote> rawQuotes;
+        private static List<model.Transaction> rawTransactions;
+
+        // Lists containing processed Data
+        private static Dictionary<string, Share> shares = new Dictionary<string, Share>();
+        private static Dictionary<string, Investment> investments = new Dictionary<string, Investment>();
+        private static Dictionary<string, Investor> investors = new Dictionary<string, Investor>();
 
         static void Main(string[] args)
         {
@@ -66,6 +72,7 @@ namespace PortfolioCheck
             try
             {
                 loadRawData();
+                buildLinkedDataModel();
             }
             catch (Exception e)
             {
@@ -113,7 +120,7 @@ namespace PortfolioCheck
 
         }
 
-        // load raw data from files in data directory
+        // loadRawData loads raw data from files in data directory
         private static void loadRawData()
         {
             // Check if required files exist
@@ -145,7 +152,7 @@ namespace PortfolioCheck
             using (StreamReader reader = new StreamReader(_options.DataFolder + "/" + PortfolioCheckConstants.InvestmentsFile))
             using (CsvReader csv = new CsvReader(reader, config))
             {
-                rawInvestments = csv.GetRecords<Investment>().ToList();
+                rawInvestments = csv.GetRecords<model.Investment>().ToList();
                 logger.Info("Loaded {0} raw Investment entries.", rawInvestments.Count);
             }
 
@@ -153,7 +160,7 @@ namespace PortfolioCheck
             using (StreamReader reader = new StreamReader(_options.DataFolder + "/" + PortfolioCheckConstants.QuotesFile))
             using (CsvReader csv = new CsvReader(reader, config))
             {
-                rawQuotes = csv.GetRecords<Quote>().ToList();
+                rawQuotes = csv.GetRecords<model.Quote>().ToList();
                 logger.Info("Loaded {0} raw Quote entries.", rawQuotes.Count);
             }
 
@@ -161,10 +168,124 @@ namespace PortfolioCheck
             using (StreamReader reader = new StreamReader(_options.DataFolder + "/" + PortfolioCheckConstants.TransactionsFile))
             using (CsvReader csv = new CsvReader(reader, config))
             {
-                rawTransactions = csv.GetRecords<Transaction>().ToList();
+                rawTransactions = csv.GetRecords<model.Transaction>().ToList();
                 logger.Info("Loaded {0} raw Transaction entries.", rawTransactions.Count);
             }
         }
 
+        // buildLinkedDataModel processes the raw data stored in memory and creates necessary index information
+        private static void buildLinkedDataModel()
+        {
+            // Process shares using quote list
+            foreach(model.Quote q in rawQuotes)
+            {
+                // Parse Date
+                DateTime quoteDate;
+                try
+                {
+                    quoteDate = DateTime.Parse(q.Date);
+                }
+                catch (FormatException)
+                {
+                    logger.Warn("Invalid Date format provided for ISIN {0} and date {1}. Skipping...", q.Isin, q.Date);
+                    continue;
+                }
+
+                if (shares.ContainsKey(q.Isin))
+                {
+                    shares[q.Isin].AddPriceRecord(quoteDate, q.PrivePerShare);
+                }
+                else
+                {
+                    shares.Add(q.Isin, new Share(q.Isin, quoteDate, q.PrivePerShare));
+                }
+            }
+
+            // Process Investments
+            foreach(model.Investment i in rawInvestments)
+            {
+                // Find or create investor reference
+                Investor investor;
+                if(investors.ContainsKey(i.InvestorId))
+                {
+                    investor = investors[i.InvestorId];
+                }
+                else
+                {
+                    investor = new Investor(i.InvestorId);
+                    investors.Add(investor.InvestorId, investor);
+                }
+
+                // Create Investment object if data is valid
+                Investment investment;
+                switch(i.InvestmentType)
+                {
+                    case "Fonds":
+                        investment = new Investment(i.InvestmentId, Investment.EInvestmentType.Fonds, i.FondsInvestor);
+                        break;
+                    case "RealEstate":
+                        investment = new Investment(i.InvestmentId, Investment.EInvestmentType.RealEstate, i.City);
+                        break;
+                    case "Stock":
+                        investment = new Investment(i.InvestmentId, Investment.EInvestmentType.Stock, i.ISIN);
+                        break;
+                    default:
+                        logger.Warn("Unknown investment type '{0}' specified for Investment ID '{1}'. Skipping...", i.InvestmentType, i.InvestmentId);
+                        continue;
+                }
+
+                // Link with reference map and investor
+                investments.Add(investment.InvestmentId, investment);
+                investor.AddInvestment(investment);
+            }
+
+            // Process Transactions
+            foreach(model.Transaction t in rawTransactions)
+            {
+                // Parse Date
+                DateTime transactionDate;
+                try
+                {
+                    transactionDate = DateTime.Parse(t.Date);
+                }
+                catch (FormatException)
+                {
+                    logger.Warn("Invalid Date format provided for transaction of Investment ID '{0}' and date {1}. Skipping...", t.InvestmentId, t.Date);
+                    continue;
+                }
+
+                // Find Investment Reference
+                if (!investments.ContainsKey(t.InvestmentId))
+                {
+                    logger.Warn("Investment ID '{0}' of Transaction Type {1} at {2} is invalid. Skipping...", t.InvestmentId, t.Type, t.Date);
+                    continue;
+                }
+                Investment investment = investments[t.InvestmentId];
+
+                // Create Transaction object if data is valid
+                Transaction transaction;
+                switch(t.Type)
+                {
+                    case "Percentage":
+                        transaction = new Transaction(investment, Transaction.ETransactionType.Percentage, transactionDate, t.Value);
+                        break;
+                    case "Building":
+                        transaction = new Transaction(investment, Transaction.ETransactionType.Building, transactionDate, t.Value);
+                        break;
+                    case "Estate":
+                        transaction = new Transaction(investment, Transaction.ETransactionType.Estate, transactionDate, t.Value);
+                        break;
+                    case "Share":
+                        transaction = new Transaction(investment, Transaction.ETransactionType.Share, transactionDate, t.Value);
+                        break;
+                    default:
+                        logger.Warn("Unknown transaction type '{0}' specified for Investment ID '{1}' at {2}. Skipping...", t.Type, investment.InvestmentId, t.Date);
+                        continue;
+                }
+
+                // Link with investment
+                investment.AddTransaction(transactionDate, transaction);
+            }
+        }
     }
 }

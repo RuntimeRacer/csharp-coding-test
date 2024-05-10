@@ -55,8 +55,8 @@ namespace PortfolioCheck
         public double GetPriceAt(DateTime datetime)
         {
             // Check whether a price exists at that moment in time.
-            // If there is no price, or no price data at all, return -1.0, so caller is aware that share is not valid for given moment.
-            if (_priceRecords.Keys.Count == 0 || _priceRecords.First().Key > datetime)
+            // If there is no (earlier) price, or no price data at all, return -1.0, so caller is aware that share is not valid for given moment.
+            if (_priceRecords.Keys.Count == 0 || _priceRecords.Where(kvp => kvp.Key <= datetime).Count() <= 0)
             {
                 return -1.0;
             }
